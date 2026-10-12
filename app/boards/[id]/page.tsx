@@ -1,51 +1,43 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, use, useCallback, useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import {
 	addDoc,
 	collection,
+	deleteDoc,
 	doc,
 	getDoc,
+	increment,
 	onSnapshot,
 	orderBy,
 	query,
 	serverTimestamp,
 	updateDoc,
-	deleteDoc,
 } from "firebase/firestore";
+import { ArrowLeft, Plus, StickyNote } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
-
-type BoardData = {
-	id: string;
-	title: string;
-	color: string;
-	folder: string;
-	notes: number;
-	userId: string;
-	isFavorite: boolean;
-	isTrashed: boolean;
-};
-
-type Note = {
-	id: string;
-	title: string;
-	description: string;
-	category: string;
-	priority: string;
-	dueDate: string;
-	completed: boolean;
-	boardId: string;
-	userId: string;
-};
+import type { Board, Note } from "@/lib/types";
+import {
+	categories,
+	compactInputClass,
+	errorMessage,
+	getBoardColor,
+	primaryButton,
+} from "@/lib/ui";
+import NoteCard from "@/components/NoteCard";
+import ThemeToggle from "@/components/ThemeToggle";
+import Toast from "@/components/Toast";
 
 export default function BoardDetailPage({ params }: { params: Promise<{ id: string }> }) {
-	const [boardId, setBoardId] = useState("");
+	const { id: boardId } = use(params);
+
 	const [user, setUser] = useState<User | null>(null);
 	const [loading, setLoading] = useState(true);
 
-	const [board, setBoard] = useState<BoardData | null>(null);
+	const [board, setBoard] = useState<Board | null>(null);
+	const [notFound, setNotFound] = useState(false);
 	const [notes, setNotes] = useState<Note[]>([]);
 
 	const [noteTitle, setNoteTitle] = useState("");
@@ -53,12 +45,10 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 	const [noteCategory, setNoteCategory] = useState("Docencia");
 	const [notePriority, setNotePriority] = useState("Media");
 	const [noteDueDate, setNoteDueDate] = useState("");
+	const [saving, setSaving] = useState(false);
 
 	const [message, setMessage] = useState("");
-
-	useEffect(() => {
-		params.then((resolved) => setBoardId(resolved.id));
-	}, [params]);
+	const clearMessage = useCallback(() => setMessage(""), []);
 
 	useEffect(() => {
 		const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -70,28 +60,31 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 	}, []);
 
 	useEffect(() => {
-		if (!boardId || !user) return;
+		if (!user) return;
 
 		async function loadBoard() {
 			try {
-				const boardRef = doc(db, "boards", boardId);
-				const boardSnap = await getDoc(boardRef);
+				const boardSnap = await getDoc(doc(db, "boards", boardId));
+				const data = boardSnap.data();
 
-				if (boardSnap.exists()) {
-					const data = boardSnap.data();
-					setBoard({
-						id: boardSnap.id,
-						title: data.title ?? "",
-						color: data.color ?? "bg-orange-200",
-						folder: data.folder ?? "",
-						notes: data.notes ?? 0,
-						userId: data.userId ?? "",
-						isFavorite: data.isFavorite ?? false,
-						isTrashed: data.isTrashed ?? false,
-					});
+				if (!data || data.userId !== user?.uid) {
+					setNotFound(true);
+					return;
 				}
-			} catch (error: any) {
-				setMessage(error.message || "No se pudo cargar el tablero.");
+
+				setBoard({
+					id: boardSnap.id,
+					title: data.title ?? "",
+					color: data.color ?? "bg-orange-200",
+					folder: data.folder ?? "",
+					notes: data.notes ?? 0,
+					userId: data.userId ?? "",
+					isFavorite: data.isFavorite ?? false,
+					isTrashed: data.isTrashed ?? false,
+				});
+			} catch {
+				// Permission denied (someone else's board) is reported the same as missing.
+				setNotFound(true);
 			}
 		}
 
@@ -99,41 +92,46 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 	}, [boardId, user]);
 
 	useEffect(() => {
-		if (!boardId || !user) return;
+		if (!user) return;
 
 		const q = query(collection(db, "boards", boardId, "notes"), orderBy("createdAt", "desc"));
 
-		const unsubscribe = onSnapshot(q, (snapshot) => {
-			const items: Note[] = snapshot.docs.map((item) => {
-				const data = item.data();
-				return {
-					id: item.id,
-					title: data.title ?? "",
-					description: data.description ?? "",
-					category: data.category ?? "Docencia",
-					priority: data.priority ?? "Media",
-					dueDate: data.dueDate ?? "",
-					completed: data.completed ?? false,
-					boardId: data.boardId ?? "",
-					userId: data.userId ?? "",
-				};
-			});
+		const unsubscribe = onSnapshot(
+			q,
+			(snapshot) => {
+				const items: Note[] = snapshot.docs.map((item) => {
+					const data = item.data();
+					return {
+						id: item.id,
+						title: data.title ?? "",
+						description: data.description ?? "",
+						category: data.category ?? "Docencia",
+						priority: data.priority ?? "Media",
+						dueDate: data.dueDate ?? "",
+						completed: data.completed ?? false,
+						boardId: data.boardId ?? "",
+						userId: data.userId ?? "",
+					};
+				});
 
-			setNotes(items);
-		});
+				setNotes(items);
+			},
+			() => setNotFound(true),
+		);
 
 		return () => unsubscribe();
 	}, [boardId, user]);
 
 	const pendingNotes = useMemo(() => notes.filter((note) => !note.completed), [notes]);
-
 	const completedNotes = useMemo(() => notes.filter((note) => note.completed), [notes]);
 
-	async function handleCreateNote() {
-		if (!user || !boardId) return;
-		if (!noteTitle.trim()) return;
+	async function handleCreateNote(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!user || !noteTitle.trim()) return;
 
 		try {
+			setSaving(true);
+
 			await addDoc(collection(db, "boards", boardId, "notes"), {
 				title: noteTitle.trim(),
 				description: noteDescription.trim(),
@@ -147,17 +145,16 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 			});
 
 			await updateDoc(doc(db, "boards", boardId), {
-				notes: notes.length + 1,
+				notes: increment(1),
 			});
 
 			setNoteTitle("");
 			setNoteDescription("");
-			setNoteCategory("Docencia");
-			setNotePriority("Media");
 			setNoteDueDate("");
-			setMessage("Nota creada correctamente.");
-		} catch (error: any) {
-			setMessage(error.message || "No se pudo crear la nota.");
+		} catch (error) {
+			setMessage(errorMessage(error, "No se pudo crear la nota."));
+		} finally {
+			setSaving(false);
 		}
 	}
 
@@ -166,8 +163,8 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 			await updateDoc(doc(db, "boards", boardId, "notes", note.id), {
 				completed: !note.completed,
 			});
-		} catch (error: any) {
-			setMessage(error.message || "No se pudo actualizar la nota.");
+		} catch (error) {
+			setMessage(errorMessage(error, "No se pudo actualizar la nota."));
 		}
 	}
 
@@ -176,211 +173,203 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 			await deleteDoc(doc(db, "boards", boardId, "notes", noteId));
 
 			await updateDoc(doc(db, "boards", boardId), {
-				notes: Math.max(notes.length - 1, 0),
+				notes: increment(-1),
 			});
 
-			setMessage("Nota eliminada correctamente.");
-		} catch (error: any) {
-			setMessage(error.message || "No se pudo eliminar la nota.");
+			setMessage("Nota eliminada.");
+		} catch (error) {
+			setMessage(errorMessage(error, "No se pudo eliminar la nota."));
 		}
 	}
 
 	if (loading) {
 		return (
-			<div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-700">
-				Cargando tablero...
+			<div className="flex min-h-screen items-center justify-center bg-bg text-sm text-muted">
+				Cargando tablero…
 			</div>
 		);
 	}
 
-	if (!user) {
+	if (!user || notFound) {
 		return (
-			<div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-700">
-				Debes iniciar sesión para ver este tablero.
+			<div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
+				<p className="text-fg">
+					{user ? "Tablero no encontrado." : "Debes iniciar sesión para ver este tablero."}
+				</p>
+				<Link href="/" className={primaryButton}>
+					{user ? "Volver a tableros" : "Iniciar sesión"}
+				</Link>
 			</div>
 		);
 	}
+
+	const color = getBoardColor(board?.color ?? "");
+	const total = notes.length;
+	const progress = total ? Math.round((completedNotes.length / total) * 100) : 0;
 
 	return (
-		<div className="min-h-screen bg-gray-50 p-4 md:p-6">
-			<div className="max-w-6xl mx-auto">
-				<div className="mb-6">
-					<Link href="/" className="inline-block mb-4 text-sm text-violet-700 hover:underline">
-						← Volver a tableros
+		<div className="min-h-screen bg-bg">
+			<header className="sticky top-0 z-30 border-b border-line bg-bg/80 backdrop-blur">
+				<div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-2.5 md:px-8">
+					<Link
+						href="/"
+						className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-fg"
+					>
+						<ArrowLeft className="size-4" />
+						Tableros
 					</Link>
+					<ThemeToggle />
+				</div>
+			</header>
 
-					<div className={`rounded-2xl p-5 shadow-sm ${board?.color ?? "bg-orange-200"}`}>
-						<h1 className="text-2xl font-bold text-gray-900">{board?.title ?? "Tablero"}</h1>
-						<p className="text-sm text-gray-800 mt-2">{board?.folder || "Sin etiqueta"}</p>
+			<main className="mx-auto max-w-5xl px-4 py-8 md:px-8 md:py-10">
+				<div className="flex items-start gap-4">
+					<div className={`flex size-12 shrink-0 items-center justify-center rounded-2xl ${color.soft}`}>
+						<StickyNote className="size-6" />
+					</div>
+					<div className="min-w-0 flex-1">
+						<h1 className="text-2xl font-semibold tracking-tight break-words text-fg md:text-3xl">
+							{board?.title ?? "Cargando…"}
+						</h1>
+						<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+							{board?.folder ? (
+								<span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs">{board.folder}</span>
+							) : null}
+							<span>
+								{completedNotes.length} de {total} completadas
+							</span>
+						</div>
 					</div>
 				</div>
 
-				<div className="bg-white border rounded-2xl p-4 mb-6 shadow-sm">
-					<h2 className="font-semibold text-gray-900 mb-4">Crear nueva nota</h2>
+				<div className="mt-5 h-1.5 overflow-hidden rounded-full bg-surface-2">
+					<div
+						className={`h-full rounded-full transition-all duration-500 ${color.bar}`}
+						style={{ width: `${progress}%` }}
+					/>
+				</div>
 
-					<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-						<input
-							value={noteTitle}
-							onChange={(e) => setNoteTitle(e.target.value)}
-							placeholder="Título de la nota"
-							className="border rounded-xl px-4 py-3 outline-none focus:ring text-gray-900 placeholder:text-gray-400 bg-white"
-						/>
-
-						<input
-							value={noteDueDate}
-							onChange={(e) => setNoteDueDate(e.target.value)}
-							type="date"
-							className="border rounded-xl px-4 py-3 outline-none focus:ring text-gray-900 bg-white"
-						/>
-
-						<select
-							value={noteCategory}
-							onChange={(e) => setNoteCategory(e.target.value)}
-							className="border rounded-xl px-4 py-3 outline-none focus:ring text-gray-900 bg-white"
-						>
-							<option value="Docencia">Docencia</option>
-							<option value="Investigación">Investigación</option>
-							<option value="Gestión">Gestión</option>
-							<option value="Tutorías">Tutorías</option>
-						</select>
-
-						<select
-							value={notePriority}
-							onChange={(e) => setNotePriority(e.target.value)}
-							className="border rounded-xl px-4 py-3 outline-none focus:ring text-gray-900 bg-white"
-						>
-							<option value="Alta">Alta</option>
-							<option value="Media">Media</option>
-							<option value="Baja">Baja</option>
-						</select>
-					</div>
-
+				<form
+					onSubmit={handleCreateNote}
+					className="mt-8 rounded-2xl border border-line bg-surface p-4 shadow-sm transition focus-within:border-accent/50 md:p-5"
+				>
+					<input
+						value={noteTitle}
+						onChange={(e) => setNoteTitle(e.target.value)}
+						placeholder="Añade una nota…"
+						aria-label="Título de la nota"
+						className="w-full bg-transparent text-base font-medium text-fg outline-none placeholder:text-muted"
+					/>
 					<textarea
 						value={noteDescription}
 						onChange={(e) => setNoteDescription(e.target.value)}
-						placeholder="Descripción"
-						className="mt-3 w-full border rounded-xl px-4 py-3 outline-none focus:ring text-gray-900 placeholder:text-gray-400 bg-white min-h-[110px]"
+						placeholder="Descripción (opcional)"
+						aria-label="Descripción"
+						rows={2}
+						className="mt-2 w-full resize-none bg-transparent text-sm text-fg outline-none placeholder:text-muted"
 					/>
 
-					<div className="mt-4">
-						<button
-							onClick={handleCreateNote}
-							className="bg-violet-600 text-white rounded-xl px-4 py-2 hover:opacity-90"
+					<div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+						<input
+							type="date"
+							value={noteDueDate}
+							onChange={(e) => setNoteDueDate(e.target.value)}
+							aria-label="Fecha de entrega"
+							className={compactInputClass}
+						/>
+						<select
+							value={noteCategory}
+							onChange={(e) => setNoteCategory(e.target.value)}
+							aria-label="Categoría"
+							className={compactInputClass}
 						>
-							Guardar nota
+							{categories.map((category) => (
+								<option key={category} value={category}>
+									{category}
+								</option>
+							))}
+						</select>
+						<select
+							value={notePriority}
+							onChange={(e) => setNotePriority(e.target.value)}
+							aria-label="Prioridad"
+							className={compactInputClass}
+						>
+							<option value="Alta">Prioridad alta</option>
+							<option value="Media">Prioridad media</option>
+							<option value="Baja">Prioridad baja</option>
+						</select>
+
+						<button
+							type="submit"
+							disabled={!noteTitle.trim() || saving}
+							className={`${primaryButton} ml-auto py-2`}
+						>
+							<Plus className="size-4" />
+							Añadir
 						</button>
 					</div>
+				</form>
+
+				<div className="mt-10 grid gap-8 lg:grid-cols-2">
+					<NoteColumn
+						title="Pendientes"
+						notes={pendingNotes}
+						emptyText="Nada pendiente por aquí."
+						onToggle={toggleCompleted}
+						onDelete={deleteNote}
+					/>
+					<NoteColumn
+						title="Completadas"
+						notes={completedNotes}
+						emptyText="Las notas que completes aparecerán aquí."
+						onToggle={toggleCompleted}
+						onDelete={deleteNote}
+					/>
 				</div>
+			</main>
 
-				{message ? (
-					<div className="mb-4 bg-white border rounded-xl px-4 py-3 text-sm text-gray-900">
-						{message}
-					</div>
-				) : null}
-
-				<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-					<section>
-						<h3 className="text-lg font-semibold text-gray-900 mb-3">Pendientes</h3>
-
-						<div className="space-y-3">
-							{pendingNotes.map((note) => (
-								<NoteCard
-									key={note.id}
-									note={note}
-									onToggle={() => toggleCompleted(note)}
-									onDelete={() => deleteNote(note.id)}
-								/>
-							))}
-
-							{pendingNotes.length === 0 ? (
-								<div className="bg-white border rounded-2xl p-4 text-gray-700">
-									No hay notas pendientes.
-								</div>
-							) : null}
-						</div>
-					</section>
-
-					<section>
-						<h3 className="text-lg font-semibold text-gray-900 mb-3">Completadas</h3>
-
-						<div className="space-y-3">
-							{completedNotes.map((note) => (
-								<NoteCard
-									key={note.id}
-									note={note}
-									onToggle={() => toggleCompleted(note)}
-									onDelete={() => deleteNote(note.id)}
-								/>
-							))}
-
-							{completedNotes.length === 0 ? (
-								<div className="bg-white border rounded-2xl p-4 text-gray-700">
-									No hay notas completadas.
-								</div>
-							) : null}
-						</div>
-					</section>
-				</div>
-			</div>
+			<Toast message={message} onClose={clearMessage} />
 		</div>
 	);
 }
 
-function NoteCard({
-	note,
+function NoteColumn({
+	title,
+	notes,
+	emptyText,
 	onToggle,
 	onDelete,
 }: {
-	note: Note;
-	onToggle: () => void;
-	onDelete: () => void;
+	title: string;
+	notes: Note[];
+	emptyText: string;
+	onToggle: (note: Note) => void;
+	onDelete: (noteId: string) => void;
 }) {
-	const priorityStyles: Record<string, string> = {
-		Alta: "bg-red-100 text-red-700",
-		Media: "bg-yellow-100 text-yellow-800",
-		Baja: "bg-green-100 text-green-700",
-	};
-
 	return (
-		<div className="bg-white border rounded-2xl p-4 shadow-sm">
-			<div className="flex items-start justify-between gap-3">
-				<div>
-					<h4 className="font-semibold text-gray-900 text-lg">{note.title}</h4>
-					{note.description ? (
-						<p className="mt-1 text-sm text-gray-700">{note.description}</p>
-					) : null}
-				</div>
+		<section>
+			<h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
+				{title}
+				<span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs tabular-nums">{notes.length}</span>
+			</h2>
 
-				<button
-					onClick={onDelete}
-					className="text-sm px-3 py-1.5 rounded-lg bg-red-600 text-white hover:opacity-90"
-				>
-					Eliminar
-				</button>
-			</div>
+			<div className="space-y-3">
+				{notes.map((note) => (
+					<NoteCard
+						key={note.id}
+						note={note}
+						onToggle={() => onToggle(note)}
+						onDelete={() => onDelete(note.id)}
+					/>
+				))}
 
-			<div className="mt-4 flex flex-wrap gap-2 text-sm">
-				<span className="px-3 py-1 rounded-full bg-gray-100 text-gray-800">{note.category}</span>
-				<span
-					className={`px-3 py-1 rounded-full ${
-						priorityStyles[note.priority] ?? "bg-gray-100 text-gray-800"
-					}`}
-				>
-					{note.priority}
-				</span>
-				{note.dueDate ? (
-					<span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700">{note.dueDate}</span>
+				{notes.length === 0 ? (
+					<p className="rounded-2xl border border-dashed border-line p-6 text-center text-sm text-muted">
+						{emptyText}
+					</p>
 				) : null}
 			</div>
-
-			<div className="mt-4">
-				<button
-					onClick={onToggle}
-					className="text-sm px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:opacity-90"
-				>
-					{note.completed ? "Marcar como pendiente" : "Marcar como completada"}
-				</button>
-			</div>
-		</div>
+		</section>
 	);
 }

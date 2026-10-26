@@ -1,36 +1,21 @@
-https://tasks-app-sable.vercel.app/
+# Tasks App
 
-## Getting Started
+A web app for organizing your work into boards of notes, like sticky notes on a wall. Each board holds tasks with a due date, a category and a priority, so you can see at a glance what's pending, what's done and what's coming up. The categories (teaching, research, management, tutoring) make it a good fit for university staff, but it works for any kind of task. The interface is in Spanish.
 
-First, run the development server:
+Try it: https://tasks-app-sable.vercel.app/
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## What you can do with it
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Create boards** for each subject, project or area, give them a color and a group name (for example "Cálculo I" in "Pregrado").
+- **Add notes to a board** with a title, an optional description, a due date, a category (Docencia, Investigación, Gestión or Tutorías) and a priority (high, medium or low).
+- **Mark notes as done.** Each board shows pending and completed notes separately, and notes past their due date are flagged.
+- **See everything on a calendar**: notes with a due date from all your boards, month by month.
+- **Browse by category** from the sidebar to see every note of one category, whatever board it's in.
+- **Star your favorite boards**, search boards by name, and move boards you don't need to the trash, where you can restore them or delete them for good.
+- **Switch between light and dark mode**, and use it on a phone as well as a computer.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Where the data comes from
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+There's no preloaded data: everything in the app is what you create. You sign up with your email and a password, and your boards and notes are saved in a Firebase (Google) database linked to your account. They sync automatically, so you see the same boards on any device you sign in from.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Your data is private. The database rules (`firestore.rules`) only let each user read and change their own boards and notes.
